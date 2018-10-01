@@ -17,8 +17,16 @@ let print = function
   | Error err -> Err.print_error err
 
 let () =
-  begin match Graph.walk (module String) "first" (fun get key -> get key) with
-    | Ok _ -> print_endline "Didn't detect cycle"
-    | Error cycle -> print_endline @@ String.concat ~sep:" -> " cycle
-  end;
   parse_stdin () |> print
+
+let () =
+  let node, table = Graph.cyclic_walk (module String)
+      "first"
+      (fun key -> key)
+      (fun get key -> get key)
+  in
+  print_endline node;
+  table
+  |> Hashtbl.sexp_of_t String.sexp_of_t String.sexp_of_t
+  |> Sexp.to_string_hum
+  |> print_endline

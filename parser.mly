@@ -19,8 +19,8 @@ statement:
     ;
 
 type_literal:
-    | STRUCT LEFT_BRACE entries = list(struct_entry) RIGHT_BRACE { Ast.Struct entries }
-    | ENUM LEFT_BRACE entries = list(enum_entry) RIGHT_BRACE { Ast.Enum entries }
+    | STRUCT LEFT_BRACE entries = separated_list(SEMICOLON, struct_entry) RIGHT_BRACE { Ast.Struct entries }
+    | ENUM LEFT_BRACE entries = separated_list(SEMICOLON, enum_entry) RIGHT_BRACE { Ast.Enum entries }
     | LEFT_BRACKET RIGHT_BRACKET sel = type_ref { Ast.Slice sel }
     | LEFT_BRACKET n = INTEGER RIGHT_BRACKET sel = type_ref { Ast.Array (n, sel) }
     | STAR sel = type_ref { Ast.Pointer sel }
@@ -34,11 +34,11 @@ type_ref:
 type_sel: DOT ref = type_ref { ref }
 
 struct_entry:
-    | TYPE name = IDENT lit = type_literal SEMICOLON { Ast.StructNested (name, lit) }
-    | name = IDENT ref = type_ref SEMICOLON { Ast.StructField (name, ref) }
+    | TYPE name = IDENT lit = type_literal { Ast.StructNested (name, lit) }
+    | name = IDENT ref = type_ref { Ast.StructField (name, ref) }
     ;
 
 enum_entry:
-    | TYPE name = IDENT lit = type_literal SEMICOLON { Ast.EnumNested (name, lit) }
-    | name = IDENT ref = option(type_ref) SEMICOLON { Ast.EnumCase (name, ref) }
+    | TYPE name = IDENT lit = type_literal { Ast.EnumNested (name, lit) }
+    | name = IDENT ref = option(type_ref) { Ast.EnumCase (name, ref) }
     ;
