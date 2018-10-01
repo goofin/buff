@@ -70,6 +70,7 @@ rule token = parse
     | ']'  { emit RIGHT_BRACKET }
     | '{'  { emit LEFT_BRACE }
     | '}'  { emit RIGHT_BRACE }
+    | '*'  { emit STAR }
 
     (* literals *)
     | integer { emit (INTEGER (Lexing.lexeme lexbuf)) }

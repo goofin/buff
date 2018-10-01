@@ -14,6 +14,7 @@ and type_literal =
   | Enum of enum_entry list
   | Slice of type_ref
   | Array of string * type_ref
+  | Pointer of type_ref
 
 and struct_entry =
   | StructNested of string * type_literal

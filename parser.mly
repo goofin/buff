@@ -2,7 +2,7 @@
 %token LEFT_BRACKET RIGHT_BRACKET
 %token TYPE PACKAGE IMPORT
 %token ENUM STRUCT
-%token DOT SEMICOLON
+%token DOT SEMICOLON STAR
 %token <string> INTEGER IDENT STRING
 %token EOF
 
@@ -23,6 +23,7 @@ type_literal:
     | ENUM LEFT_BRACE entries = list(enum_entry) RIGHT_BRACE { Ast.Enum entries }
     | LEFT_BRACKET RIGHT_BRACKET sel = type_ref { Ast.Slice sel }
     | LEFT_BRACKET n = INTEGER RIGHT_BRACKET sel = type_ref { Ast.Array (n, sel) }
+    | STAR sel = type_ref { Ast.Pointer sel }
     ;
 
 type_ref:
