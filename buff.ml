@@ -17,4 +17,8 @@ let print = function
   | Error err -> Err.print_error err
 
 let () =
+  begin match Graph.walk (module String) "first" (fun get key -> get key) with
+    | Ok _ -> print_endline "Didn't detect cycle"
+    | Error cycle -> print_endline @@ String.concat ~sep:" -> " cycle
+  end;
   parse_stdin () |> print
