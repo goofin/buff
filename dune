@@ -1,0 +1,11 @@
+(ocamllex
+    (modules lexer))
+
+(menhir
+    (modules parser)
+    (flags --unused-tokens --explain))
+
+(executable
+    (name buff)
+    (preprocess (pps ppx_jane))
+    (libraries base stdio menhirLib))
