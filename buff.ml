@@ -8,16 +8,16 @@ let parse lexbuf =
 let parse_stdin () = Lexing.from_channel Stdio.stdin |> parse
 let parse_str str = Lexing.from_string str |> parse
 
-let print = function
-  | Ok statements -> List.iter statements ~f:(
-      Ast.sexp_of_statement
-      >> Sexp.to_string_hum
-      >> print_endline
-    )
+let print_type (name, type_) =
+  let type_ = type_ |> Ast.sexp_of_type_ |> Sexp.to_string_hum in
+  printf "%s => %s\n" name type_
+
+let print_result = function
+  | Ok types -> List.iter types ~f:print_type
   | Error err -> Err.print_error err
 
 let () =
-  parse_stdin () |> print
+  parse_stdin () |> print_result
 
 let () =
   let node, table = Graph.cyclic_walk (module String)

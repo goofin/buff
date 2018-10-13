@@ -18,19 +18,6 @@ let emit token =
 let lexing_error lexbuf =
     let invalid_input = String.make 1 (Lexing.lexeme_char lexbuf 0) in
     raise (Error (invalid_input, lexbuf.Lexing.lex_curr_p))
-
-let string_buffer = Buffer.create 256
-
-let add_char c =
-  Buffer.add_char string_buffer c
-
-let add_lexeme lexbuf =
-  Buffer.add_string string_buffer (Lexing.lexeme lexbuf)
-
-let grab_string () =
-  let str = Buffer.contents string_buffer in
-  Buffer.reset string_buffer;
-  str
 }
 
 let white = ' ' | '\t'
@@ -57,8 +44,6 @@ rule token = parse
     }
 
     (* keywords *)
-    | "package" { emit PACKAGE }
-    | "import"  { emit IMPORT }
     | "type"    { emit TYPE }
     | "struct"  { emit STRUCT }
     | "enum"    { emit ENUM }
@@ -75,11 +60,6 @@ rule token = parse
     (* literals *)
     | integer { emit (INTEGER (Lexing.lexeme lexbuf)) }
     | ident { emit (IDENT (Lexing.lexeme lexbuf)) }
-    | '"' { let start = Lexing.lexeme_start_p lexbuf in
-            let string = read_string lexbuf in
-            lexbuf.lex_start_p <- start;
-            emit (STRING string)
-          }
 
     (* everything else *)
     | eof      { EOF }
@@ -89,11 +69,3 @@ and read_comment = parse
     | "*/"    { }
     | newline { Lexing.new_line lexbuf; read_comment lexbuf }
     | _       { read_comment lexbuf }
-
-and read_string = parse
-    | '"'                       { grab_string () }
-    | '\\' '"'                  { add_char '"';      read_string lexbuf }
-    | '\\' '\\'                 { add_char '\\';     read_string lexbuf }
-    | [^ '\r' '\n' '"' '\\' ]+  { add_lexeme lexbuf; read_string lexbuf }
-    | _                         { lexing_error lexbuf }
-    | eof                       { raise (Error ("Unclosed string literal", lexbuf.Lexing.lex_curr_p)) }
