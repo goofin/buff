@@ -1,29 +1,37 @@
 open Std
 
-type type_ =
+(*
+ * Type of types
+ *)
+
+type typ =
   | Bool
   | Void
   | Integer of [`Signed | `Unsigned] * [`S8 | `S16 | `S32 | `S64]
   | Float of [`S32 | `S64]
   | Varint of [`Signed | `Unsigned | `Float ]
-  | Slice of type_
-  | Array of int * type_
-  | Enum of enum_rec
   | Struct of struct_rec
-  | Pointer of type_
+  | Enum of enum_rec
+  | Slice of typ
+  | Pointer of typ
+  | Array of int * typ
 
 and struct_rec =
-  { mutable struct_fields: (string * type_) list
-  ; mutable struct_types: (string * type_) list
+  { struct_name: string list
+  ; mutable struct_fields: (string * typ) list
+  ; mutable struct_types: (string * typ) list
   }
 
 and enum_rec =
-  { mutable enum_cases: (string * type_) list
-  ; mutable enum_types: (string * type_) list
+  { enum_name: string list
+  ; mutable enum_cases: (string * typ) list
+  ; mutable enum_types: (string * typ) list
   }
 [@@deriving sexp]
 
-let rec size_of_type = function
+let typ_to_string = sexp_of_typ >> Sexp.to_string_hum
+
+let rec typ_to_size = function
   | Bool -> `Fixed 1
   | Void -> `Fixed 0
   | Integer (_, `S8) -> `Fixed 1
@@ -33,168 +41,274 @@ let rec size_of_type = function
   | Float `S32 -> `Fixed 4
   | Float `S64 -> `Fixed 8
   | Varint _ -> `Variable
+  | Struct _ -> `Variable
+  | Enum _ -> `Variable
   | Slice _ -> `Variable
-  | Array (n, type_) ->
-    begin match size_of_type type_ with
+  | Pointer _ -> `Variable
+  | Array (n, typ) -> begin
+      match typ_to_size typ with
       | `Fixed e -> `Fixed (n * e)
       | `Variable -> `Variable
     end
-  | Enum _ -> `Variable
-  | Struct _ -> `Variable
-  | Pointer _ -> `Variable
 
-let builtins = [
-  ("int8", Integer (`Signed, `S8));
-  ("int16", Integer (`Signed, `S16));
-  ("int32", Integer (`Signed, `S32));
-  ("int64", Integer (`Signed, `S64));
-  ("uint8", Integer (`Unsigned, `S8));
-  ("uint16", Integer (`Unsigned, `S16));
-  ("uint32", Integer (`Unsigned, `S32));
-  ("uint64", Integer (`Unsigned, `S64));
-  ("float32", Float `S32);
-  ("float64", Float `S64);
-  ("int", Varint `Signed);
-  ("uint", Varint `Unsigned);
-  ("float", Varint `Float);
-  ("bool", Bool);
-  ("byte", Integer (`Unsigned, `S8)); (* or should this be distinct? *)
-]
+(*
+ * Error type
+ *)
+
+type error =
+  [ `DuplicateType of string
+  | `UnknownType of string
+  | `RecursiveType of string
+  | `InvalidArray of string
+  | `InvalidType of typ
+  ]
+[@@deriving sexp]
+
+let error_to_string =
+  sexp_of_error >> Sexp.to_string_hum
+
+exception Error of error
+let throw value = raise (Error value)
+
+(*
+ * IR Type
+ *)
+
+type t = (string * typ) list
+[@@deriving sexp]
+
+let builtins =
+  let build name typ = (name, typ) in
+  [ build "int8" (Integer (`Signed, `S8))
+  ; build "int16" (Integer (`Signed, `S16))
+  ; build "int32" (Integer (`Signed, `S32))
+  ; build "int64" (Integer (`Signed, `S64))
+  ; build "uint8" (Integer (`Unsigned, `S8))
+  ; build "uint16" (Integer (`Unsigned, `S16))
+  ; build "uint32" (Integer (`Unsigned, `S32))
+  ; build "uint64" (Integer (`Unsigned, `S64))
+  ; build "float32" (Float `S32)
+  ; build "float64" (Float `S64)
+  ; build "int" (Varint `Signed)
+  ; build "uint" (Varint `Unsigned)
+  ; build "float" (Varint `Float)
+  ; build "bool" (Bool)
+  ; build "byte" (Integer (`Unsigned, `S8)) (* or should this be distinct? *)
+  ]
 
 module type Scope = sig
   type t
 
-  val root: t
-  val update: t -> (string * type_) list -> t
-  val find: t -> string -> type_ option
-  val types: t -> (string * type_) list
+  val create: (string * typ) list -> t
+  val update: t -> string -> (string * typ) list -> t
+  val find: t -> string -> typ option
+  val types: t -> (string * typ) list
 end
 
 module Scope: Scope = struct
   type t =
-    { scope: (string, type_, String.comparator_witness) Map.t
+    { scope: (string, typ, String.comparator_witness) Map.t
+    ; stack: string list
     }
 
-  let root: t =
-    { scope = Map.of_alist_exn (module String) builtins
+  let root = Map.of_alist_exn (module String) builtins
+
+  let combine ~key:_ _ v2 = v2
+
+  let create entries =
+    let child = Map.of_alist_exn (module String) entries in
+    { scope = Map.merge_skewed root child ~combine
+    ; stack = []
     }
 
-  let update { scope } entries =
-    let combine ~key:_ _ v2 = v2 in
-    let child_scope = Map.of_alist_exn (module String) entries in
-    { scope = Map.merge_skewed scope child_scope ~combine
+  let update { scope; stack } name entries =
+    let child = Map.of_alist_exn (module String) entries in
+    { scope = Map.merge_skewed scope child ~combine
+    ; stack = name :: stack
     }
 
-  let find { scope } = Map.find scope
+  let find { scope; _ } = Map.find scope
 
-  let types { scope } = Map.to_alist scope
+  let types { scope; _ } = Map.to_alist scope
 end
 
+let struct_types entries =
+  List.filter_map entries ~f:(function
+      | Ast.StructNested (name, typ) -> Some (name, typ)
+      | _ -> None
+    )
 
-let split_struct entries =
-  ( List.filter_map entries ~f:(function
-        | Ast.StructNested (name, type_) -> Some (name, type_)
-        | _ -> None
+let struct_fields entries =
+  List.filter_map entries ~f:(function
+      | Ast.StructField (name, typ_ref) -> Some (name, Some typ_ref)
+      | _ -> None
+    )
+
+let enum_types entries =
+  List.filter_map entries ~f:(function
+      | Ast.EnumNested (name, typ) -> Some (name, typ)
+      | _ -> None
+    )
+
+let enum_cases entries =
+  List.filter_map entries ~f:(function
+      | Ast.EnumCase (name, typ_ref) -> Some (name, typ_ref)
+      | _ -> None
+    )
+
+let ast_to_t_exn types =
+  let rec empty stack types =
+    List.filter_map types ~f:(fun (name, typ) ->
+        let full_name = name :: stack in
+        match typ with
+        | Ast.Struct entries ->
+          let types = entries |> struct_types |> empty full_name in
+          Some (name, Struct
+                  { struct_name = full_name
+                  ; struct_types = types
+                  ; struct_fields = []
+                  } )
+        | Ast.Enum entries ->
+          let types = entries |> enum_types |> empty full_name in
+          Some (name, Enum
+                  { enum_name = full_name
+                  ; enum_types = types
+                  ; enum_cases = []
+                  } )
       )
-  , List.filter_map entries ~f:(function
-        | Ast.StructField (name, type_ref) -> Some (name, type_ref)
-        | _ -> None
-      )
-  )
-
-let split_enum entries =
-  ( List.filter_map entries ~f:(function
-        | Ast.EnumNested (name, type_) -> Some (name, type_)
-        | _ -> None
-      )
-  , List.filter_map entries ~f:(function
-        | Ast.EnumCase (name, type_ref) -> Some (name, type_ref)
-        | _ -> None
-      )
-  )
-
-(* TODO(jeff): i don't understand the exception model in Base yet *)
-
-exception Error of
-    [ `DuplicateType of string
-    | `UnknownType of string
-    | `RecursiveType of string
-    | `InvalidArray of string
-    | `InvalidType of type_
-    ]
-
-let throw value = raise (Error value)
-
-let of_ast_exn types =
-  let rec empty scope entries =
-    let zero scope (name, type_) =
-      match type_ with
-      | Ast.Struct _ -> Struct { struct_types = []; struct_fields = [] }
-      | Ast.Enum _ -> Enum { enum_types = []; enum_cases = [] }
-      | Ast.Slice type_ref -> Slice (resolve scope type_ref)
-      | Ast.Array (n, type_ref) -> Void
-      | Ast.Pointer type_ref -> Pointer (resolve scope type_ref)
-    in
-
-    match type_ with
-    | Ast.Struct entries -> begin
-        let self = { struct_types = []; struct_fields = [] } in
-        let scope = Scope.update scope [ (name, Struct self )] in
-        let types, fields = split_struct entries in
-        let types = List.map types ~f:(empty scope) in
-        let scope = Scope.update scope types in
-        ( name, Struct self )
-      end
   in
 
   let rec search_types types name selector =
-    let (type_, types) = match List.Assoc.find ~equal:String.equal types name with
+    let (typ, types) = match List.Assoc.find ~equal:String.equal types name with
       | None -> throw @@ `UnknownType name
-      | Some (Struct { struct_types; _ } as type_) -> (type_, struct_types)
-      | Some (Enum { enum_types; _ } as type_) -> (type_, enum_types)
-      | Some type_ -> throw @@ `InvalidType type_
+      | Some (Struct { struct_types; _ } as typ) -> (typ, struct_types)
+      | Some (Enum { enum_types; _ } as typ) -> (typ, enum_types)
+      | Some typ -> (typ, [])
     in
     match selector with
     | name :: selector -> search_types types name selector
-    | [] ->  type_
+    | [] ->  typ
+  in
 
-  and resolve scope = function
-    | Ast.Literal type_ -> build scope type_
+  let rec resolve scope name typ_ref =
+    match typ_ref with
     | Ast.Selector (name, selector) -> search_types (Scope.types scope) name selector
+    | Ast.Slice typ_ref -> Slice (resolve scope name typ_ref)
+    | Ast.Pointer typ_ref -> Pointer (resolve scope name typ_ref)
+    | Ast.Array (n, typ_ref) ->
+      let n = try Int.of_string n with | _ -> throw @@ `InvalidArray n in
+      let typ = resolve scope name typ_ref in
+      Array (n, typ)
+  in
 
-  and build scope = function
-    | Ast.Struct entries -> begin
-        let types, fields = split_struct entries in
-        let types = build_all scope types in
-        let scope = Scope.update scope types in
-        let fields = List.map fields ~f:(fun (name, type_ref) ->
-            (n    e,  es  ve  co   ne   pe_ref)
-          ) in
-        Struct { types; fields }
-      end
-    | Ast.Enum entries -> begin
-        let types, cases = split_enum entries in
-        let types = build_all scope types in
-        let scope = Scope.update scope name types in
-        let cases = List.map cases ~f:(fun (name, type_ref) ->
-            ( name, match type_ref with
-                | None -> Void
-                | Some type_ref -> resolve scope name type_ref
-            )
-          ) in
-        Enum { types; cases }
-      end
-    | Ast.Slice type_ref -> Slice (resolve scope name type_ref)
-    | Ast.Array (n, type_ref) -> Void
-    | Ast.Pointer type_ref -> Pointer (resolve scope name type_ref)
+  let rec build scope name typ =
+    let (types, entries) = match typ with
+      | Ast.Struct entries -> ( struct_types entries, struct_fields entries )
+      | Ast.Enum entries -> ( enum_types entries, enum_cases entries )
+    in
+
+    (* if we're building a struct/enum in scope, add all of the subtypes to the scope *)
+    let scope = match Scope.find scope name with
+      | Some (Struct { struct_types; _ }) -> Scope.update scope name struct_types
+      | Some (Enum { enum_types; _ }) -> Scope.update scope name enum_types
+      | _ -> scope
+    in
+
+    (* since all the types are necessarily in scope, build them *)
+    let types = build_all scope types in
+
+    (* now we can build the struct/enum entries, if any *)
+    let entries = List.map entries ~f:(fun (name, typ_ref) ->
+        match typ_ref with
+        | None -> (name, Void)
+        | Some typ_ref -> (name, resolve scope name typ_ref)
+      ) in
+
+    ( name
+    , match Scope.find scope name with
+    | Some (Struct self) ->
+      self.struct_types <- types;
+      self.struct_fields <- entries;
+      Struct self
+
+    | Some (Enum self) ->
+      self.enum_types <- types;
+      self.enum_cases <- entries;
+      Enum self
+
+    | Some typ -> throw @@ `InvalidType typ
+    | None -> throw @@ `UnknownType name
+    )
 
   and build_all scope types =
-
+    List.map types ~f:(fun (name, typ) -> build scope name typ)
 
   in
-  build_all Scope.root types
+  let scope = Scope.create (empty [] types) in
+  build_all scope types
 
-let of_ast types =
-  try Ok (of_ast_exn types) with
+let ast_to_t types =
+  try Ok (ast_to_t_exn types) with
   | Error err -> Error err
 
+let t_to_string =
+  let module ToString = struct
+    type ir_typ = typ
+    [@@deriving sexp]
+
+    type typ =
+      [ `Basic of ir_typ
+      | `Named of string list
+      | `Struct of (string * typ) list
+      | `Enum of (string * typ) list
+      | `Slice of typ
+      | `Pointer of typ
+      | `Array of int * typ
+      ]
+    [@@deriving sexp]
+
+    type t = (string * typ) list
+    [@@deriving sexp]
+
+    let rec flatten (name, typ) =
+      let types = match typ with
+        | Struct { struct_types; _ } -> struct_types
+        | Enum { enum_types; _ } -> enum_types
+        | _ -> []
+      in
+      (name, typ) :: List.concat_map types ~f:flatten
+
+    let rec transform (name, typ) =
+      ( name
+      , match typ with
+      | Slice typ -> `Slice (transform_entry typ)
+      | Pointer typ -> `Pointer (transform_entry typ)
+      | Array (n, typ) -> `Array (n, transform_entry typ)
+      | Struct { struct_fields; _ } ->
+        let names, types = List.unzip struct_fields in
+        let types = List.map types ~f:transform_entry in
+        `Struct (List.zip_exn names types)
+      | Enum { enum_cases; _ } ->
+        let names, types = List.unzip enum_cases in
+        let types = List.map types ~f:transform_entry in
+        `Enum (List.zip_exn names types)
+      | typ -> `Basic typ
+      )
+
+    and transform_entry typ =
+      match typ with
+      | Slice typ -> `Slice (transform_entry typ)
+      | Pointer typ -> `Pointer (transform_entry typ)
+      | Array (n, typ) -> `Array (n, transform_entry typ)
+      | Struct { struct_name; _ } -> `Named struct_name
+      | Enum { enum_name; _ } -> `Named enum_name
+      | typ -> `Basic typ
+
+    let ir_to_t t: t =
+      List.concat_map t ~f:flatten
+      |> List.map ~f:transform
+  end in
+
+  ToString.ir_to_t
+  >> ToString.sexp_of_t
+  >> Sexp.to_string_hum

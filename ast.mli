@@ -1,5 +1,3 @@
-open Std
-
 (*
  * Type of types
  *)
@@ -23,16 +21,12 @@ and enum_entry =
   | EnumCase of string * typ_ref option
 [@@deriving sexp]
 
-let typ_to_string =
-  sexp_of_typ >> Sexp.to_string_hum
+val typ_to_string : typ -> string
 
 (*
  * AST type
  *)
 
 type t = (string * typ) list
-[@@deriving sexp]
 
-let t_to_string =
-  sexp_of_t >> Sexp.to_string_hum
-
+val t_to_string : t -> string
