@@ -251,7 +251,10 @@ let ast_to_t types =
   try Ok (ast_to_t_exn types) with
   | Error err -> Error err
 
-let t_to_string =
+let t_to_string t =
+  let module S = struct type t = string list [@@deriving hash, sexp, compare] end in
+  let table = Hash_set.create (module S) in
+
   let module ToString = struct
     type ir_typ = typ
     [@@deriving sexp]
@@ -271,12 +274,20 @@ let t_to_string =
     [@@deriving sexp]
 
     let rec flatten (name, typ) =
-      let types = match typ with
-        | Struct { struct_types; _ } -> struct_types
-        | Enum { enum_types; _ } -> enum_types
-        | _ -> []
-      in
-      (name, typ) :: List.concat_map types ~f:flatten
+      match begin match typ with
+        | Struct { struct_types; struct_name; _ } -> Some (struct_types, struct_name)
+        | Enum { enum_types; enum_name; _ } -> Some (enum_types, enum_name)
+        | _ -> None
+      end with
+      | None -> []
+      | Some (types, full_name) ->
+        (* print_endline ("check" ^ (S.sexp_of_t full_name |> Sexp.to_string_hum)); *)
+        if Hash_set.mem table full_name then []
+        else begin
+          Hash_set.add table full_name;
+          (name, typ) :: List.concat_map types ~f:flatten
+        end
+
 
     let rec transform (name, typ) =
       ( name
@@ -309,6 +320,11 @@ let t_to_string =
       |> List.map ~f:transform
   end in
 
-  ToString.ir_to_t
-  >> ToString.sexp_of_t
-  >> Sexp.to_string_hum
+  let result = t
+               |> ToString.ir_to_t
+               |> ToString.sexp_of_t
+               |> Sexp.to_string_hum
+  in
+
+  (* print_endline (Hash_set.sexp_of_t S.sexp_of_t table |> Sexp.to_string_hum); *)
+  result
